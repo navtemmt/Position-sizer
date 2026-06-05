@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using cAlgo.API;
 using cAlgo.API.Internals;
 
@@ -100,6 +101,12 @@ namespace cAlgo.Robots
         private TextBlock _volumeText;
         private TextBlock _rrText;
         private TextBlock _statusText;
+
+        private TextBox _entryInput;
+        private TextBox _slInput;
+        private TextBox _tpInput;
+        private Button _applyPricesButton;
+
         private Button _tradeButton;
         private Button _switchModeButton;
         private Button _flipDirectionButton;
@@ -235,6 +242,70 @@ namespace cAlgo.Robots
             root.AddChild(_rrText);
             root.AddChild(_statusText);
 
+            root.AddChild(new TextBlock
+            {
+                Text = "Entry",
+                FontSize = 12,
+                ForegroundColor = Color.White,
+                Margin = "0 8 0 2"
+            });
+
+            _entryInput = new TextBox
+            {
+                Text = FormatPrice(_entryPrice),
+                Height = 28,
+                Margin = "0 0 0 4"
+            };
+
+            root.AddChild(_entryInput);
+
+            root.AddChild(new TextBlock
+            {
+                Text = "Stop Loss",
+                FontSize = 12,
+                ForegroundColor = Color.White,
+                Margin = "0 4 0 2"
+            });
+
+            _slInput = new TextBox
+            {
+                Text = FormatPrice(_slPrice),
+                Height = 28,
+                Margin = "0 0 0 4"
+            };
+
+            root.AddChild(_slInput);
+
+            root.AddChild(new TextBlock
+            {
+                Text = "Take Profit",
+                FontSize = 12,
+                ForegroundColor = Color.White,
+                Margin = "0 4 0 2"
+            });
+
+            _tpInput = new TextBox
+            {
+                Text = FormatPrice(_tpPrice),
+                Height = 28,
+                Margin = "0 0 0 8"
+            };
+
+            root.AddChild(_tpInput);
+
+            _applyPricesButton = new Button
+            {
+                Text = "APPLY",
+                Width = 78,
+                Height = 30,
+                BackgroundColor = Color.MediumPurple,
+                ForegroundColor = Color.White,
+                Margin = "0 0 0 8"
+            };
+            _applyPricesButton.Click += args => ApplyPricesFromPanel();
+
+            root.AddChild(_applyPricesButton);
+
             var buttonRow = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
@@ -362,6 +433,43 @@ namespace cAlgo.Robots
             RefreshUi();
         }
 
+        private void ApplyPricesFromPanel()
+        {
+            double parsed;
+
+            if (_entryMode != EntryMode.Instant)
+            {
+                if (TryParsePrice(_entryInput.Text, out parsed))
+                {
+                    _entryPrice = NormalizePrice(parsed);
+                    if (_entryLine != null)
+                        _entryLine.Y = _entryPrice;
+                }
+            }
+
+            if (TryParsePrice(_slInput.Text, out parsed))
+            {
+                _slPrice = NormalizePrice(parsed);
+                if (_slLine != null)
+                    _slLine.Y = _slPrice;
+            }
+
+            if (TryParsePrice(_tpInput.Text, out parsed))
+            {
+                _tpPrice = NormalizePrice(parsed);
+                if (_tpLine != null)
+                    _tpLine.Y = _tpPrice;
+            }
+
+            RefreshUi();
+        }
+
+        private bool TryParsePrice(string text, out double value)
+        {
+            return double.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out value) ||
+                   double.TryParse(text, NumberStyles.Any, CultureInfo.CurrentCulture, out value);
+        }
+
         private void FlipDirection()
         {
             if (_entryMode != EntryMode.Instant)
@@ -438,6 +546,22 @@ namespace cAlgo.Robots
 
             if (_statusText != null)
                 _statusText.Text = BuildStatusText();
+
+            if (_entryInput != null)
+            {
+                _entryInput.Text = _entryMode == EntryMode.Instant
+                    ? $"LIVE {FormatPrice(_entryPrice)}"
+                    : FormatPrice(_entryPrice);
+            }
+
+            if (_slInput != null)
+                _slInput.Text = FormatPrice(_slPrice);
+
+            if (_tpInput != null)
+                _tpInput.Text = FormatPrice(_tpPrice);
+
+            if (_applyPricesButton != null)
+                _applyPricesButton.IsEnabled = true;
 
             UpdatePanelVisibility();
             UpdateLineButtonVisibility();
@@ -713,7 +837,7 @@ namespace cAlgo.Robots
 
         private string FormatPrice(double price)
         {
-            return price.ToString("F" + Symbol.Digits);
+            return price.ToString("F" + Symbol.Digits, CultureInfo.InvariantCulture);
         }
 
         private class TradePlan
