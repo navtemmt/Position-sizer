@@ -112,12 +112,30 @@ namespace cAlgo.Robots
             DrawOrUpdateLines();
             BuildPanel();
             BuildLineTradeButton();
+            RefreshLineInteractivity();
             RefreshUi();
         }
 
         protected override void OnTick()
         {
-            SyncFromLines();
+            if (_entryMode == EntryMode.Instant)
+            {
+                _entryPrice = NormalizePrice(InferDirection() == TradeType.Buy ? Symbol.Ask : Symbol.Bid);
+
+                if (_entryLine != null)
+                    _entryLine.Y = _entryPrice;
+
+                if (_slLine != null)
+                    _slPrice = NormalizePrice(_slLine.Y);
+
+                if (_tpLine != null)
+                    _tpPrice = NormalizePrice(_tpLine.Y);
+            }
+            else
+            {
+                SyncFromLines();
+            }
+
             RefreshUi();
         }
 
@@ -156,9 +174,19 @@ namespace cAlgo.Robots
             _slLine = Chart.DrawHorizontalLine(SlLineName, _slPrice, Color.Red, LineThickness, LineStyle.Solid);
             _tpLine = Chart.DrawHorizontalLine(TpLineName, _tpPrice, Color.LimeGreen, LineThickness, LineStyle.Solid);
 
-            _entryLine.IsInteractive = true;
-            _slLine.IsInteractive = true;
-            _tpLine.IsInteractive = true;
+            RefreshLineInteractivity();
+        }
+
+        private void RefreshLineInteractivity()
+        {
+            if (_entryLine != null)
+                _entryLine.IsInteractive = _entryMode != EntryMode.Instant;
+
+            if (_slLine != null)
+                _slLine.IsInteractive = true;
+
+            if (_tpLine != null)
+                _tpLine.IsInteractive = true;
         }
 
         private void SyncFromLines()
@@ -325,17 +353,27 @@ namespace cAlgo.Robots
                 _entryMode = EntryMode.Instant;
 
             if (_entryMode == EntryMode.Instant)
-                _entryPrice = NormalizePrice(Symbol.Ask);
+                _entryPrice = NormalizePrice(InferDirection() == TradeType.Buy ? Symbol.Ask : Symbol.Bid);
 
             if (_entryLine != null)
                 _entryLine.Y = _entryPrice;
 
+            RefreshLineInteractivity();
             RefreshUi();
         }
 
         private void FlipDirection()
         {
-            SyncFromLines();
+            if (_entryMode != EntryMode.Instant)
+                SyncFromLines();
+            else
+            {
+                if (_slLine != null)
+                    _slPrice = NormalizePrice(_slLine.Y);
+
+                if (_tpLine != null)
+                    _tpPrice = NormalizePrice(_tpLine.Y);
+            }
 
             var slPips = GetSlPips();
             var tpPips = GetTpPips();
@@ -363,7 +401,18 @@ namespace cAlgo.Robots
 
         private void RefreshUi()
         {
-            SyncFromLines();
+            if (_entryMode != EntryMode.Instant)
+            {
+                SyncFromLines();
+            }
+            else
+            {
+                if (_slLine != null)
+                    _slPrice = NormalizePrice(_slLine.Y);
+
+                if (_tpLine != null)
+                    _tpPrice = NormalizePrice(_tpLine.Y);
+            }
 
             var direction = InferDirection();
             var slPips = GetSlPips();
