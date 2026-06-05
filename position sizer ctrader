@@ -1,0 +1,686 @@
+using System;
+using cAlgo.API;
+using cAlgo.API.Internals;
+
+namespace cAlgo.Robots
+{
+    [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.None)]
+    public class PositionSizerStyleCbot : Robot
+    {
+        public enum EntryMode
+        {
+            Instant,
+            Pending,
+            StopLimit
+        }
+
+        public enum TradeButtonPlacement
+        {
+            PanelOnly,
+            LineOnly,
+            PanelAndLine
+        }
+
+        [Parameter("Risk %", Group = "Risk", DefaultValue = 1.0, MinValue = 0.01)]
+        public double RiskPercent { get; set; }
+
+        [Parameter("Money Risk (0 = use %)", Group = "Risk", DefaultValue = 0.0, MinValue = 0.0)]
+        public double MoneyRisk { get; set; }
+
+        [Parameter("Entry Mode", Group = "Trading", DefaultValue = EntryMode.Instant)]
+        public EntryMode CurrentEntryMode { get; set; }
+
+        [Parameter("Trade Button Placement", Group = "Trading", DefaultValue = TradeButtonPlacement.PanelAndLine)]
+        public TradeButtonPlacement ButtonPlacement { get; set; }
+
+        [Parameter("Do Not Apply SL", Group = "Trading", DefaultValue = false)]
+        public bool DoNotApplyStopLoss { get; set; }
+
+        [Parameter("Do Not Apply TP", Group = "Trading", DefaultValue = false)]
+        public bool DoNotApplyTakeProfit { get; set; }
+
+        [Parameter("Expiry Minutes", Group = "Trading", DefaultValue = 0, MinValue = 0)]
+        public int ExpiryMinutes { get; set; }
+
+        [Parameter("Max Spread (pips, 0=off)", Group = "Fuses", DefaultValue = 0.0, MinValue = 0.0)]
+        public double MaxSpreadPips { get; set; }
+
+        [Parameter("Min Entry-SL Distance (pips, 0=off)", Group = "Fuses", DefaultValue = 0.0, MinValue = 0.0)]
+        public double MinEntrySlDistancePips { get; set; }
+
+        [Parameter("Max Entry-SL Distance (pips, 0=off)", Group = "Fuses", DefaultValue = 0.0, MinValue = 0.0)]
+        public double MaxEntrySlDistancePips { get; set; }
+
+        [Parameter("Max Risk % (0=off)", Group = "Fuses", DefaultValue = 0.0, MinValue = 0.0)]
+        public double MaxRiskPercentage { get; set; }
+
+        [Parameter("Label", Group = "Trading", DefaultValue = "PositionSizer")]
+        public string TradeLabel { get; set; }
+
+        [Parameter("Comment", Group = "Trading", DefaultValue = "")]
+        public string Commentary { get; set; }
+
+        [Parameter("Initial SL Pips", Group = "Defaults", DefaultValue = 20.0, MinValue = 0.1)]
+        public double InitialSlPips { get; set; }
+
+        [Parameter("Initial TP Pips", Group = "Defaults", DefaultValue = 40.0, MinValue = 0.1)]
+        public double InitialTpPips { get; set; }
+
+        [Parameter("Line Thickness", Group = "Visual", DefaultValue = 2, MinValue = 1)]
+        public int LineThickness { get; set; }
+
+        [Parameter("Show Panel", Group = "Visual", DefaultValue = true)]
+        public bool ShowPanel { get; set; }
+
+        [Parameter("Show Chart Labels", Group = "Visual", DefaultValue = true)]
+        public bool ShowChartLabels { get; set; }
+
+        private const string EntryLineName = "PS_ENTRY";
+        private const string SlLineName = "PS_SL";
+        private const string TpLineName = "PS_TP";
+        private const string EntryTextName = "PS_ENTRY_TEXT";
+        private const string SlTextName = "PS_SL_TEXT";
+        private const string TpTextName = "PS_TP_TEXT";
+
+        private ChartHorizontalLine _entryLine;
+        private ChartHorizontalLine _slLine;
+        private ChartHorizontalLine _tpLine;
+
+        private double _entryPrice;
+        private double _slPrice;
+        private double _tpPrice;
+        private double _stopLimitRangePips = 2.0;
+
+        private EntryMode _entryMode;
+
+        private Border _panelHost;
+        private TextBlock _modeText;
+        private TextBlock _directionText;
+        private TextBlock _riskText;
+        private TextBlock _volumeText;
+        private TextBlock _rrText;
+        private TextBlock _statusText;
+        private Button _tradeButton;
+        private Button _switchModeButton;
+        private Button _flipDirectionButton;
+        private Button _lineTradeButton;
+
+        protected override void OnStart()
+        {
+            _entryMode = CurrentEntryMode;
+            InitializePrices();
+            DrawOrUpdateLines();
+            BuildPanel();
+            BuildLineTradeButton();
+            RefreshUi();
+        }
+
+        protected override void OnTick()
+        {
+            SyncFromLines();
+            RefreshUi();
+        }
+
+        protected override void OnBar()
+        {
+            RefreshUi();
+        }
+
+        protected override void OnStop()
+        {
+            Chart.RemoveObject(EntryLineName);
+            Chart.RemoveObject(SlLineName);
+            Chart.RemoveObject(TpLineName);
+            Chart.RemoveObject(EntryTextName);
+            Chart.RemoveObject(SlTextName);
+            Chart.RemoveObject(TpTextName);
+
+            if (_lineTradeButton != null)
+                Chart.RemoveControl(_lineTradeButton);
+
+            if (_panelHost != null)
+                Chart.RemoveControl(_panelHost);
+        }
+
+        private void InitializePrices()
+        {
+            var mid = (Symbol.Bid + Symbol.Ask) / 2.0;
+            _entryPrice = NormalizePrice(_entryMode == EntryMode.Instant ? Symbol.Ask : mid);
+            _slPrice = NormalizePrice(_entryPrice - InitialSlPips * Symbol.PipSize);
+            _tpPrice = NormalizePrice(_entryPrice + InitialTpPips * Symbol.PipSize);
+        }
+
+        private void DrawOrUpdateLines()
+        {
+            _entryLine = Chart.DrawHorizontalLine(EntryLineName, _entryPrice, Color.DodgerBlue, LineThickness, LineStyle.Solid);
+            _slLine = Chart.DrawHorizontalLine(SlLineName, _slPrice, Color.Red, LineThickness, LineStyle.Solid);
+            _tpLine = Chart.DrawHorizontalLine(TpLineName, _tpPrice, Color.LimeGreen, LineThickness, LineStyle.Solid);
+
+            _entryLine.IsInteractive = true;
+            _slLine.IsInteractive = true;
+            _tpLine.IsInteractive = true;
+        }
+
+        private void SyncFromLines()
+        {
+            if (_entryLine != null)
+                _entryPrice = NormalizePrice(_entryLine.Y);
+
+            if (_slLine != null)
+                _slPrice = NormalizePrice(_slLine.Y);
+
+            if (_tpLine != null)
+                _tpPrice = NormalizePrice(_tpLine.Y);
+        }
+
+        private void BuildPanel()
+        {
+            if (!ShowPanel)
+                return;
+
+            var root = new StackPanel
+            {
+                Orientation = Orientation.Vertical,
+                Margin = "8",
+                Width = 270
+            };
+
+            root.AddChild(new TextBlock
+            {
+                Text = "Position Sizer cBot",
+                FontSize = 16,
+                ForegroundColor = Color.White,
+                Margin = "0 0 0 6"
+            });
+
+            _modeText = MakeText();
+            _directionText = MakeText();
+            _riskText = MakeText();
+            _volumeText = MakeText();
+            _rrText = MakeText();
+            _statusText = MakeText();
+
+            root.AddChild(_modeText);
+            root.AddChild(_directionText);
+            root.AddChild(_riskText);
+            root.AddChild(_volumeText);
+            root.AddChild(_rrText);
+            root.AddChild(_statusText);
+
+            var buttonRow = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Margin = "0 8 0 0"
+            };
+
+            _tradeButton = new Button
+            {
+                Text = "TRADE",
+                Width = 78,
+                Height = 32,
+                BackgroundColor = Color.SeaGreen,
+                ForegroundColor = Color.White,
+                Margin = "0 0 6 0"
+            };
+            _tradeButton.Click += args => ExecuteCurrentTradePlan();
+
+            _switchModeButton = new Button
+            {
+                Text = "MODE",
+                Width = 78,
+                Height = 32,
+                BackgroundColor = Color.SteelBlue,
+                ForegroundColor = Color.White,
+                Margin = "0 0 6 0"
+            };
+            _switchModeButton.Click += args => SwitchEntryMode();
+
+            _flipDirectionButton = new Button
+            {
+                Text = "FLIP",
+                Width = 78,
+                Height = 32,
+                BackgroundColor = Color.DarkOrange,
+                ForegroundColor = Color.White
+            };
+            _flipDirectionButton.Click += args => FlipDirection();
+
+            buttonRow.AddChild(_tradeButton);
+            buttonRow.AddChild(_switchModeButton);
+            buttonRow.AddChild(_flipDirectionButton);
+            root.AddChild(buttonRow);
+
+            _panelHost = new Border
+            {
+                Child = root,
+                CornerRadius = 6,
+                BackgroundColor = Color.FromHex("#1E1E1E"),
+                BorderThickness = "1",
+                BorderColor = Color.FromHex("#555555"),
+                Opacity = 0.92,
+                Padding = "10",
+                Margin = "8",
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top
+            };
+
+            Chart.AddControl(_panelHost);
+            UpdatePanelVisibility();
+        }
+
+        private void BuildLineTradeButton()
+        {
+            _lineTradeButton = new Button
+            {
+                Text = "TRADE",
+                Width = 70,
+                Height = 26,
+                BackgroundColor = Color.OrangeRed,
+                ForegroundColor = Color.White,
+                IsVisible = false
+            };
+
+            _lineTradeButton.Click += args => ExecuteCurrentTradePlan();
+            Chart.AddControl(_lineTradeButton, Chart.LastVisibleBarIndex, _entryPrice);
+            UpdateLineButtonVisibility();
+            UpdateLineTradeButtonPosition();
+        }
+
+        private TextBlock MakeText()
+        {
+            return new TextBlock
+            {
+                FontSize = 12,
+                ForegroundColor = Color.White,
+                Margin = "0 2 0 0"
+            };
+        }
+
+        private void UpdatePanelVisibility()
+        {
+            if (_panelHost == null)
+                return;
+
+            _panelHost.IsVisible = ShowPanel &&
+                                   (ButtonPlacement == TradeButtonPlacement.PanelOnly ||
+                                    ButtonPlacement == TradeButtonPlacement.PanelAndLine);
+        }
+
+        private void UpdateLineButtonVisibility()
+        {
+            if (_lineTradeButton == null)
+                return;
+
+            _lineTradeButton.IsVisible = ButtonPlacement == TradeButtonPlacement.LineOnly ||
+                                         ButtonPlacement == TradeButtonPlacement.PanelAndLine;
+        }
+
+        private void SwitchEntryMode()
+        {
+            if (_entryMode == EntryMode.Instant)
+                _entryMode = EntryMode.Pending;
+            else if (_entryMode == EntryMode.Pending)
+                _entryMode = EntryMode.StopLimit;
+            else
+                _entryMode = EntryMode.Instant;
+
+            if (_entryMode == EntryMode.Instant)
+                _entryPrice = NormalizePrice(Symbol.Ask);
+
+            if (_entryLine != null)
+                _entryLine.Y = _entryPrice;
+
+            RefreshUi();
+        }
+
+        private void FlipDirection()
+        {
+            SyncFromLines();
+
+            var slPips = GetSlPips();
+            var tpPips = GetTpPips();
+            var currentDirection = InferDirection();
+
+            if (currentDirection == TradeType.Buy)
+            {
+                _slPrice = NormalizePrice(_entryPrice + slPips * Symbol.PipSize);
+                _tpPrice = NormalizePrice(_entryPrice - tpPips * Symbol.PipSize);
+            }
+            else
+            {
+                _slPrice = NormalizePrice(_entryPrice - slPips * Symbol.PipSize);
+                _tpPrice = NormalizePrice(_entryPrice + tpPips * Symbol.PipSize);
+            }
+
+            if (_slLine != null)
+                _slLine.Y = _slPrice;
+
+            if (_tpLine != null)
+                _tpLine.Y = _tpPrice;
+
+            RefreshUi();
+        }
+
+        private void RefreshUi()
+        {
+            SyncFromLines();
+
+            var direction = InferDirection();
+            var slPips = GetSlPips();
+            var tpPips = GetTpPips();
+            var rr = slPips > 0 ? tpPips / slPips : 0.0;
+            var riskAmount = GetRiskAmount();
+            var volume = CalculateVolumeInUnits(riskAmount, slPips);
+
+            if (_modeText != null)
+                _modeText.Text = $"Mode: {_entryMode}";
+
+            if (_directionText != null)
+                _directionText.Text = $"Direction: {direction}";
+
+            if (_riskText != null)
+                _riskText.Text = $"Risk: {riskAmount:F2} {Account.Asset.Name}";
+
+            if (_volumeText != null)
+                _volumeText.Text = $"Volume: {volume:N0} units";
+
+            if (_rrText != null)
+                _rrText.Text = $"SL: {slPips:F1} pips | TP: {tpPips:F1} pips | RR: {rr:F2}";
+
+            if (_statusText != null)
+                _statusText.Text = BuildStatusText();
+
+            UpdatePanelVisibility();
+            UpdateLineButtonVisibility();
+            UpdateLineTradeButtonPosition();
+            UpdateChartLabels();
+        }
+
+        private void UpdateChartLabels()
+        {
+            if (!ShowChartLabels)
+            {
+                Chart.RemoveObject(EntryTextName);
+                Chart.RemoveObject(SlTextName);
+                Chart.RemoveObject(TpTextName);
+                return;
+            }
+
+            var direction = InferDirection();
+            var slPips = GetSlPips();
+            var tpPips = GetTpPips();
+            var riskAmount = GetRiskAmount();
+            var rewardAmount = slPips > 0 ? riskAmount * (tpPips / slPips) : 0.0;
+            var volumeUnits = CalculateVolumeInUnits(riskAmount, slPips);
+            var barIndex = Math.Max(Chart.FirstVisibleBarIndex, Chart.LastVisibleBarIndex - 3);
+
+            Chart.DrawText(
+                EntryTextName,
+                $"{direction} | Entry {FormatPrice(_entryPrice)} | Vol {volumeUnits:N0}",
+                barIndex,
+                _entryPrice,
+                Color.DodgerBlue);
+
+            Chart.DrawText(
+                SlTextName,
+                $"SL {slPips:F1}p | -{riskAmount:F2} | {FormatPrice(_slPrice)}",
+                barIndex,
+                _slPrice,
+                Color.Red);
+
+            Chart.DrawText(
+                TpTextName,
+                $"TP {tpPips:F1}p | +{rewardAmount:F2} | {FormatPrice(_tpPrice)}",
+                barIndex,
+                _tpPrice,
+                Color.LimeGreen);
+        }
+
+        private void UpdateLineTradeButtonPosition()
+        {
+            if (_lineTradeButton == null || !_lineTradeButton.IsVisible)
+                return;
+
+            var barIndex = Math.Max(Chart.FirstVisibleBarIndex, Chart.LastVisibleBarIndex - 6);
+            Chart.MoveControl(_lineTradeButton, barIndex, _entryPrice);
+        }
+
+        private string BuildStatusText()
+        {
+            return ValidateTradePlan(BuildTradePlanFromLines(), false);
+        }
+
+        private TradePlan BuildTradePlanFromLines()
+        {
+            var plan = new TradePlan
+            {
+                EntryPrice = NormalizePrice(_entryPrice),
+                StopLossPrice = NormalizePrice(_slPrice),
+                TakeProfitPrice = NormalizePrice(_tpPrice),
+                Direction = InferDirection(),
+                EntryMode = _entryMode,
+                StopLossPips = GetSlPips(),
+                TakeProfitPips = GetTpPips(),
+                RiskAmount = GetRiskAmount(),
+                StopLimitRangePips = _stopLimitRangePips,
+                Label = TradeLabel,
+                Comment = Commentary
+            };
+
+            if (plan.EntryMode == EntryMode.Instant)
+                plan.EntryPrice = plan.Direction == TradeType.Buy ? Symbol.Ask : Symbol.Bid;
+
+            plan.VolumeInUnits = CalculateVolumeInUnits(plan.RiskAmount, plan.StopLossPips);
+            return plan;
+        }
+
+        private string ValidateTradePlan(TradePlan plan, bool strict)
+        {
+            var spreadPips = Symbol.Spread / Symbol.PipSize;
+
+            if (plan.StopLossPips <= 0)
+                return strict ? "Invalid SL distance." : "Status: invalid SL distance";
+
+            if (!DoNotApplyTakeProfit && plan.TakeProfitPips <= 0)
+                return strict ? "Invalid TP distance." : "Status: invalid TP distance";
+
+            if (MaxSpreadPips > 0 && spreadPips > MaxSpreadPips)
+                return strict ? $"Spread too high: {spreadPips:F1} pips" : $"Status: spread too high ({spreadPips:F1} pips)";
+
+            if (MinEntrySlDistancePips > 0 && plan.StopLossPips < MinEntrySlDistancePips)
+                return strict ? "Entry-SL distance below minimum." : "Status: SL distance too small";
+
+            if (MaxEntrySlDistancePips > 0 && plan.StopLossPips > MaxEntrySlDistancePips)
+                return strict ? "Entry-SL distance above maximum." : "Status: SL distance too large";
+
+            if (MaxRiskPercentage > 0 && MoneyRisk <= 0 && RiskPercent > MaxRiskPercentage)
+                return strict ? "Risk % exceeds max allowed." : "Status: risk % exceeds limit";
+
+            if (plan.VolumeInUnits <= 0)
+                return strict ? "Calculated volume is zero." : "Status: zero volume";
+
+            if (plan.EntryMode != EntryMode.Instant)
+            {
+                var current = plan.Direction == TradeType.Buy ? Symbol.Ask : Symbol.Bid;
+                if (Math.Abs(plan.EntryPrice - current) < Symbol.PipSize * 0.1)
+                    return strict ? "Pending entry too close to market." : "Status: pending entry too close";
+            }
+
+            return strict ? string.Empty : "Status: ready";
+        }
+
+        private void ExecuteCurrentTradePlan()
+        {
+            var plan = BuildTradePlanFromLines();
+            var validation = ValidateTradePlan(plan, true);
+
+            if (!string.IsNullOrWhiteSpace(validation))
+            {
+                Print(validation);
+                if (_statusText != null)
+                    _statusText.Text = $"Status: {validation}";
+                return;
+            }
+
+            TradeResult result = null;
+
+            if (plan.EntryMode == EntryMode.Instant)
+            {
+                result = ExecuteMarketOrder(
+                    plan.Direction,
+                    SymbolName,
+                    plan.VolumeInUnits,
+                    plan.Label,
+                    DoNotApplyStopLoss ? null : (double?)plan.StopLossPips,
+                    DoNotApplyTakeProfit ? null : (double?)plan.TakeProfitPips,
+                    plan.Comment,
+                    false);
+            }
+            else if (plan.EntryMode == EntryMode.Pending)
+            {
+                var current = plan.Direction == TradeType.Buy ? Symbol.Ask : Symbol.Bid;
+                var isStop = (plan.Direction == TradeType.Buy && plan.EntryPrice > current) ||
+                             (plan.Direction == TradeType.Sell && plan.EntryPrice < current);
+
+                if (isStop)
+                {
+                    result = PlaceStopOrder(
+                        plan.Direction,
+                        SymbolName,
+                        plan.VolumeInUnits,
+                        plan.EntryPrice,
+                        plan.Label,
+                        DoNotApplyStopLoss ? null : (double?)plan.StopLossPips,
+                        DoNotApplyTakeProfit ? null : (double?)plan.TakeProfitPips,
+                        ProtectionType.Relative,
+                        GetExpiry(),
+                        plan.Comment,
+                        false,
+                        StopTriggerMethod.Trade);
+                }
+                else
+                {
+                    result = PlaceLimitOrder(
+                        plan.Direction,
+                        SymbolName,
+                        plan.VolumeInUnits,
+                        plan.EntryPrice,
+                        plan.Label,
+                        DoNotApplyStopLoss ? null : (double?)plan.StopLossPips,
+                        DoNotApplyTakeProfit ? null : (double?)plan.TakeProfitPips,
+                        ProtectionType.Relative,
+                        GetExpiry(),
+                        plan.Comment,
+                        false);
+                }
+            }
+            else if (plan.EntryMode == EntryMode.StopLimit)
+            {
+                result = PlaceStopLimitOrder(
+                    plan.Direction,
+                    SymbolName,
+                    plan.VolumeInUnits,
+                    plan.EntryPrice,
+                    plan.StopLimitRangePips,
+                    plan.Label,
+                    DoNotApplyStopLoss ? null : (double?)plan.StopLossPips,
+                    DoNotApplyTakeProfit ? null : (double?)plan.TakeProfitPips,
+                    ProtectionType.Relative,
+                    GetExpiry(),
+                    plan.Comment,
+                    false,
+                    StopTriggerMethod.Trade);
+            }
+
+            if (result == null)
+            {
+                if (_statusText != null)
+                    _statusText.Text = "Status: no trade result";
+                return;
+            }
+
+            if (result.IsSuccessful)
+            {
+                Print("Trade successful.");
+                if (_statusText != null)
+                    _statusText.Text = "Status: trade successful";
+            }
+            else
+            {
+                Print("Trade failed: {0}", result.Error);
+                if (_statusText != null)
+                    _statusText.Text = $"Status: failed - {result.Error}";
+            }
+        }
+
+        private DateTime? GetExpiry()
+        {
+            if (ExpiryMinutes <= 0)
+                return null;
+
+            return Server.Time.AddMinutes(ExpiryMinutes);
+        }
+
+        private TradeType InferDirection()
+        {
+            return _slPrice < _entryPrice ? TradeType.Buy : TradeType.Sell;
+        }
+
+        private double GetRiskAmount()
+        {
+            if (MoneyRisk > 0)
+                return MoneyRisk;
+
+            return Account.Balance * (RiskPercent / 100.0);
+        }
+
+        private double GetSlPips()
+        {
+            return Math.Abs(_entryPrice - _slPrice) / Symbol.PipSize;
+        }
+
+        private double GetTpPips()
+        {
+            return Math.Abs(_tpPrice - _entryPrice) / Symbol.PipSize;
+        }
+
+        private double CalculateVolumeInUnits(double riskAmount, double slPips)
+        {
+            if (slPips <= 0)
+                return 0;
+
+            var pipValuePerUnit = Symbol.PipValue / Symbol.LotSize;
+            if (pipValuePerUnit <= 0)
+                return 0;
+
+            var rawUnits = riskAmount / (slPips * pipValuePerUnit);
+            return Symbol.NormalizeVolumeInUnits(rawUnits, RoundingMode.Down);
+        }
+
+        private double NormalizePrice(double price)
+        {
+            return Math.Round(price, Symbol.Digits, MidpointRounding.AwayFromZero);
+        }
+
+        private string FormatPrice(double price)
+        {
+            return price.ToString("F" + Symbol.Digits);
+        }
+
+        private class TradePlan
+        {
+            public TradeType Direction { get; set; }
+            public EntryMode EntryMode { get; set; }
+            public double EntryPrice { get; set; }
+            public double StopLossPrice { get; set; }
+            public double TakeProfitPrice { get; set; }
+            public double StopLossPips { get; set; }
+            public double TakeProfitPips { get; set; }
+            public double StopLimitRangePips { get; set; }
+            public double RiskAmount { get; set; }
+            public double VolumeInUnits { get; set; }
+            public string Label { get; set; }
+            public string Comment { get; set; }
+        }
+    }
+}
