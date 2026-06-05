@@ -28,6 +28,15 @@ namespace cAlgo.Robots
         [Parameter("Money Risk (0 = use %)", Group = "Risk", DefaultValue = 0.0, MinValue = 0.0)]
         public double MoneyRisk { get; set; }
 
+        [Parameter("Include Spread In Risk", Group = "Risk", DefaultValue = false)]
+        public bool IncludeSpreadInRisk { get; set; }
+
+        [Parameter("Include Commission In Risk", Group = "Risk", DefaultValue = false)]
+        public bool IncludeCommissionInRisk { get; set; }
+
+        [Parameter("Commission Per Lot Round Turn", Group = "Risk", DefaultValue = 0.0, MinValue = 0.0)]
+        public double CommissionPerLotRoundTurn { get; set; }
+
         [Parameter("Entry Mode", Group = "Trading", DefaultValue = EntryMode.Instant)]
         public EntryMode CurrentEntryMode { get; set; }
 
@@ -76,6 +85,9 @@ namespace cAlgo.Robots
         [Parameter("Show Chart Labels", Group = "Visual", DefaultValue = true)]
         public bool ShowChartLabels { get; set; }
 
+        [Parameter("Start Minimized", Group = "Visual", DefaultValue = false)]
+        public bool StartMinimized { get; set; }
+
         private const string EntryLineName = "PS_ENTRY";
         private const string SlLineName = "PS_SL";
         private const string TpLineName = "PS_TP";
@@ -92,9 +104,19 @@ namespace cAlgo.Robots
         private double _tpPrice;
         private double _stopLimitRangePips = 2.0;
 
+        private double _panelRiskPercent;
+        private double _panelMoneyRisk;
+        private bool _panelIncludeSpread;
+        private bool _panelIncludeCommission;
+        private double _panelCommissionPerLot;
+
         private EntryMode _entryMode;
 
         private Border _panelHost;
+        private StackPanel _panelContent;
+        private Button _minimizeButton;
+        private bool _isPanelMinimized;
+
         private TextBlock _modeText;
         private TextBlock _directionText;
         private TextBlock _riskText;
@@ -105,16 +127,30 @@ namespace cAlgo.Robots
         private TextBox _entryInput;
         private TextBox _slInput;
         private TextBox _tpInput;
-        private Button _applyPricesButton;
+        private TextBox _riskPercentInput;
+        private TextBox _moneyRiskInput;
+        private TextBox _commissionInput;
+
+        private bool _isSynchronizingInputs;
 
         private Button _tradeButton;
         private Button _switchModeButton;
         private Button _flipDirectionButton;
         private Button _lineTradeButton;
+        private Button _spreadToggleButton;
+        private Button _commissionToggleButton;
 
         protected override void OnStart()
         {
             _entryMode = CurrentEntryMode;
+            _isPanelMinimized = StartMinimized;
+
+            _panelRiskPercent = RiskPercent;
+            _panelMoneyRisk = MoneyRisk;
+            _panelIncludeSpread = IncludeSpreadInRisk;
+            _panelIncludeCommission = IncludeCommissionInRisk;
+            _panelCommissionPerLot = CommissionPerLotRoundTurn;
+
             InitializePrices();
             DrawOrUpdateLines();
             BuildPanel();
@@ -177,7 +213,7 @@ namespace cAlgo.Robots
 
         private void DrawOrUpdateLines()
         {
-            _entryLine = Chart.DrawHorizontalLine(EntryLineName, _entryPrice, Color.DodgerBlue, LineThickness, LineStyle.Solid);
+            _entryLine = Chart.DrawHorizontalLine(EntryLineName, _entryPrice, Color.White, LineThickness, LineStyle.Solid);
             _slLine = Chart.DrawHorizontalLine(SlLineName, _slPrice, Color.Red, LineThickness, LineStyle.Solid);
             _tpLine = Chart.DrawHorizontalLine(TpLineName, _tpPrice, Color.LimeGreen, LineThickness, LineStyle.Solid);
 
@@ -216,17 +252,42 @@ namespace cAlgo.Robots
             var root = new StackPanel
             {
                 Orientation = Orientation.Vertical,
-                Margin = "8",
-                Width = 270
+                Margin = "6",
+                Width = 250
             };
 
-            root.AddChild(new TextBlock
+            var headerRow = new StackPanel
             {
-                Text = "Position Sizer cBot",
-                FontSize = 16,
+                Orientation = Orientation.Horizontal,
+                Margin = "0 0 0 4"
+            };
+
+            var titleText = new TextBlock
+            {
+                Text = "Position Sizer",
+                FontSize = 15,
                 ForegroundColor = Color.White,
-                Margin = "0 0 0 6"
-            });
+                Margin = "0 2 8 0"
+            };
+
+            _minimizeButton = new Button
+            {
+                Text = _isPanelMinimized ? "+" : "-",
+                Width = 24,
+                Height = 22,
+                BackgroundColor = Color.SteelBlue,
+                ForegroundColor = Color.White
+            };
+            _minimizeButton.Click += args => TogglePanelMinimize();
+
+            headerRow.AddChild(titleText);
+            headerRow.AddChild(_minimizeButton);
+            root.AddChild(headerRow);
+
+            _panelContent = new StackPanel
+            {
+                Orientation = Orientation.Vertical
+            };
 
             _modeText = MakeText();
             _directionText = MakeText();
@@ -235,119 +296,137 @@ namespace cAlgo.Robots
             _rrText = MakeText();
             _statusText = MakeText();
 
-            root.AddChild(_modeText);
-            root.AddChild(_directionText);
-            root.AddChild(_riskText);
-            root.AddChild(_volumeText);
-            root.AddChild(_rrText);
-            root.AddChild(_statusText);
+            _panelContent.AddChild(_modeText);
+            _panelContent.AddChild(_directionText);
+            _panelContent.AddChild(_riskText);
+            _panelContent.AddChild(_volumeText);
+            _panelContent.AddChild(_rrText);
+            _panelContent.AddChild(_statusText);
 
-            root.AddChild(new TextBlock
+            _panelContent.AddChild(MakeRowLabel("EN / SL"));
+            var row1 = new StackPanel { Orientation = Orientation.Horizontal, Margin = "0 2 0 4" };
+            _entryInput = MakeSmallInput();
+            _slInput = MakeSmallInput();
+            _entryInput.TextChanged += args => OnEntryInputChanged();
+            _slInput.TextChanged += args => OnSlInputChanged();
+            row1.AddChild(_entryInput);
+            row1.AddChild(_slInput);
+            _panelContent.AddChild(row1);
+
+            _panelContent.AddChild(MakeRowLabel("TP / %"));
+            var row2 = new StackPanel { Orientation = Orientation.Horizontal, Margin = "0 2 0 4" };
+            _tpInput = MakeSmallInput();
+            _riskPercentInput = MakeSmallInput();
+            _tpInput.TextChanged += args => OnTpInputChanged();
+            _riskPercentInput.TextChanged += args => OnRiskPercentChanged();
+            row2.AddChild(_tpInput);
+            row2.AddChild(_riskPercentInput);
+            _panelContent.AddChild(row2);
+
+            _panelContent.AddChild(MakeRowLabel("$ / MODE"));
+            var row3 = new StackPanel { Orientation = Orientation.Horizontal, Margin = "0 2 0 4" };
+            _moneyRiskInput = MakeSmallInput();
+            _moneyRiskInput.TextChanged += args => OnMoneyRiskChanged();
+
+            _switchModeButton = new Button
             {
-                Text = "Entry",
-                FontSize = 12,
+                Text = "MODE",
+                Width = 92,
+                Height = 24,
+                BackgroundColor = Color.SteelBlue,
                 ForegroundColor = Color.White,
-                Margin = "0 8 0 2"
-            });
+                Margin = "4 0 0 0"
+            };
+            _switchModeButton.Click += args => SwitchEntryMode();
 
-            _entryInput = new TextBox
+            row3.AddChild(_moneyRiskInput);
+            row3.AddChild(_switchModeButton);
+            _panelContent.AddChild(row3);
+
+            _panelContent.AddChild(MakeRowLabel("COM / SPR / FEE"));
+            var row4 = new StackPanel { Orientation = Orientation.Horizontal, Margin = "0 2 0 8" };
+
+            _commissionInput = MakeSmallInput();
+            _commissionInput.TextChanged += args => OnCommissionChanged();
+
+            _spreadToggleButton = new Button
             {
-                Text = FormatPrice(_entryPrice),
-                Height = 28,
-                Margin = "0 0 0 4"
+                Width = 68,
+                Height = 24,
+                ForegroundColor = Color.White,
+                Margin = "0 0 4 0"
+            };
+            _spreadToggleButton.Click += args =>
+            {
+                _panelIncludeSpread = !_panelIncludeSpread;
+                RefreshUi();
             };
 
-            root.AddChild(_entryInput);
-
-            root.AddChild(new TextBlock
+            _commissionToggleButton = new Button
             {
-                Text = "Stop Loss",
-                FontSize = 12,
-                ForegroundColor = Color.White,
-                Margin = "0 4 0 2"
-            });
-
-            _slInput = new TextBox
+                Width = 68,
+                Height = 24,
+                ForegroundColor = Color.White
+            };
+            _commissionToggleButton.Click += args =>
             {
-                Text = FormatPrice(_slPrice),
-                Height = 28,
-                Margin = "0 0 0 4"
+                _panelIncludeCommission = !_panelIncludeCommission;
+                RefreshUi();
             };
 
-            root.AddChild(_slInput);
-
-            root.AddChild(new TextBlock
-            {
-                Text = "Take Profit",
-                FontSize = 12,
-                ForegroundColor = Color.White,
-                Margin = "0 4 0 2"
-            });
-
-            _tpInput = new TextBox
-            {
-                Text = FormatPrice(_tpPrice),
-                Height = 28,
-                Margin = "0 0 0 8"
-            };
-
-            root.AddChild(_tpInput);
-
-            _applyPricesButton = new Button
-            {
-                Text = "APPLY",
-                Width = 78,
-                Height = 30,
-                BackgroundColor = Color.MediumPurple,
-                ForegroundColor = Color.White,
-                Margin = "0 0 0 8"
-            };
-            _applyPricesButton.Click += args => ApplyPricesFromPanel();
-
-            root.AddChild(_applyPricesButton);
+            row4.AddChild(_commissionInput);
+            row4.AddChild(_spreadToggleButton);
+            row4.AddChild(_commissionToggleButton);
+            _panelContent.AddChild(row4);
 
             var buttonRow = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
-                Margin = "0 8 0 0"
+                Margin = "0 6 0 0"
             };
 
             _tradeButton = new Button
             {
                 Text = "TRADE",
-                Width = 78,
-                Height = 32,
+                Width = 72,
+                Height = 28,
                 BackgroundColor = Color.SeaGreen,
                 ForegroundColor = Color.White,
-                Margin = "0 0 6 0"
+                Margin = "0 0 4 0"
             };
             _tradeButton.Click += args => ExecuteCurrentTradePlan();
-
-            _switchModeButton = new Button
-            {
-                Text = "MODE",
-                Width = 78,
-                Height = 32,
-                BackgroundColor = Color.SteelBlue,
-                ForegroundColor = Color.White,
-                Margin = "0 0 6 0"
-            };
-            _switchModeButton.Click += args => SwitchEntryMode();
 
             _flipDirectionButton = new Button
             {
                 Text = "FLIP",
-                Width = 78,
-                Height = 32,
+                Width = 72,
+                Height = 28,
                 BackgroundColor = Color.DarkOrange,
-                ForegroundColor = Color.White
+                ForegroundColor = Color.White,
+                Margin = "0 0 4 0"
             };
             _flipDirectionButton.Click += args => FlipDirection();
 
+            var usePercentButton = new Button
+            {
+                Text = "USE %",
+                Width = 72,
+                Height = 28,
+                BackgroundColor = Color.Gray,
+                ForegroundColor = Color.White
+            };
+            usePercentButton.Click += args =>
+            {
+                _panelMoneyRisk = 0;
+                RefreshUi();
+            };
+
             buttonRow.AddChild(_tradeButton);
-            buttonRow.AddChild(_switchModeButton);
             buttonRow.AddChild(_flipDirectionButton);
-            root.AddChild(buttonRow);
+            buttonRow.AddChild(usePercentButton);
+            _panelContent.AddChild(buttonRow);
+
+            root.AddChild(_panelContent);
 
             _panelHost = new Border
             {
@@ -357,7 +436,7 @@ namespace cAlgo.Robots
                 BorderThickness = "1",
                 BorderColor = Color.FromHex("#555555"),
                 Opacity = 0.92,
-                Padding = "10",
+                Padding = "8",
                 Margin = "8",
                 HorizontalAlignment = HorizontalAlignment.Left,
                 VerticalAlignment = VerticalAlignment.Top
@@ -365,6 +444,30 @@ namespace cAlgo.Robots
 
             Chart.AddControl(_panelHost);
             UpdatePanelVisibility();
+            UpdatePanelMinimizeState();
+        }
+
+        private TextBlock MakeRowLabel(string text)
+        {
+            return new TextBlock
+            {
+                Text = text,
+                FontSize = 11,
+                ForegroundColor = Color.LightGray,
+                Margin = "0 6 0 0"
+            };
+        }
+
+        private TextBox MakeSmallInput()
+        {
+            return new TextBox
+            {
+                Width = 92,
+                Height = 24,
+                Margin = "0 0 4 0",
+                TextAlignment = TextAlignment.Center,
+                AcceptsReturn = false
+            };
         }
 
         private void BuildLineTradeButton()
@@ -389,10 +492,25 @@ namespace cAlgo.Robots
         {
             return new TextBlock
             {
-                FontSize = 12,
+                FontSize = 11,
                 ForegroundColor = Color.White,
-                Margin = "0 2 0 0"
+                Margin = "0 1 0 0"
             };
+        }
+
+        private void TogglePanelMinimize()
+        {
+            _isPanelMinimized = !_isPanelMinimized;
+            UpdatePanelMinimizeState();
+        }
+
+        private void UpdatePanelMinimizeState()
+        {
+            if (_panelContent != null)
+                _panelContent.IsVisible = !_isPanelMinimized;
+
+            if (_minimizeButton != null)
+                _minimizeButton.Text = _isPanelMinimized ? "+" : "-";
         }
 
         private void UpdatePanelVisibility()
@@ -433,38 +551,103 @@ namespace cAlgo.Robots
             RefreshUi();
         }
 
-        private void ApplyPricesFromPanel()
+        private void OnEntryInputChanged()
         {
-            double parsed;
+            if (_isSynchronizingInputs || _entryMode == EntryMode.Instant)
+                return;
 
-            if (_entryMode != EntryMode.Instant)
-            {
-                if (TryParsePrice(_entryInput.Text, out parsed))
-                {
-                    _entryPrice = NormalizePrice(parsed);
-                    if (_entryLine != null)
-                        _entryLine.Y = _entryPrice;
-                }
-            }
+            double value;
+            if (!TryParseDouble(_entryInput.Text, out value))
+                return;
 
-            if (TryParsePrice(_slInput.Text, out parsed))
-            {
-                _slPrice = NormalizePrice(parsed);
-                if (_slLine != null)
-                    _slLine.Y = _slPrice;
-            }
-
-            if (TryParsePrice(_tpInput.Text, out parsed))
-            {
-                _tpPrice = NormalizePrice(parsed);
-                if (_tpLine != null)
-                    _tpLine.Y = _tpPrice;
-            }
+            _entryPrice = NormalizePrice(value);
+            if (_entryLine != null)
+                _entryLine.Y = _entryPrice;
 
             RefreshUi();
         }
 
-        private bool TryParsePrice(string text, out double value)
+        private void OnSlInputChanged()
+        {
+            if (_isSynchronizingInputs)
+                return;
+
+            double value;
+            if (!TryParseDouble(_slInput.Text, out value))
+                return;
+
+            _slPrice = NormalizePrice(value);
+            if (_slLine != null)
+                _slLine.Y = _slPrice;
+
+            RefreshUi();
+        }
+
+        private void OnTpInputChanged()
+        {
+            if (_isSynchronizingInputs)
+                return;
+
+            double value;
+            if (!TryParseDouble(_tpInput.Text, out value))
+                return;
+
+            _tpPrice = NormalizePrice(value);
+            if (_tpLine != null)
+                _tpLine.Y = _tpPrice;
+
+            RefreshUi();
+        }
+
+        private void OnRiskPercentChanged()
+        {
+            if (_isSynchronizingInputs)
+                return;
+
+            double value;
+            if (!TryParseDouble(_riskPercentInput.Text, out value))
+                return;
+
+            if (value <= 0)
+                return;
+
+            _panelRiskPercent = value;
+            RefreshUi();
+        }
+
+        private void OnMoneyRiskChanged()
+        {
+            if (_isSynchronizingInputs)
+                return;
+
+            double value;
+            if (!TryParseDouble(_moneyRiskInput.Text, out value))
+                return;
+
+            if (value < 0)
+                return;
+
+            _panelMoneyRisk = value;
+            RefreshUi();
+        }
+
+        private void OnCommissionChanged()
+        {
+            if (_isSynchronizingInputs)
+                return;
+
+            double value;
+            if (!TryParseDouble(_commissionInput.Text, out value))
+                return;
+
+            if (value < 0)
+                return;
+
+            _panelCommissionPerLot = value;
+            RefreshUi();
+        }
+
+        private bool TryParseDouble(string text, out double value)
         {
             return double.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out value) ||
                    double.TryParse(text, NumberStyles.Any, CultureInfo.CurrentCulture, out value);
@@ -536,23 +719,32 @@ namespace cAlgo.Robots
                 _directionText.Text = $"Direction: {direction}";
 
             if (_riskText != null)
-                _riskText.Text = $"Risk: {riskAmount:F2} {Account.Asset.Name}";
+                _riskText.Text = $"Risk: {riskAmount:F2} {Account.Asset.Name} | %: {_panelRiskPercent:F2} | $: {_panelMoneyRisk:F2}";
 
             if (_volumeText != null)
-                _volumeText.Text = $"Volume: {volume:N0} units";
+                _volumeText.Text = $"Volume: {volume:N0}";
 
             if (_rrText != null)
-                _rrText.Text = $"SL: {slPips:F1} pips | TP: {tpPips:F1} pips | RR: {rr:F2}";
+                _rrText.Text = $"SL {slPips:F1} | TP {tpPips:F1} | RR {rr:F2}";
 
             if (_statusText != null)
-                _statusText.Text = BuildStatusText();
+                _statusText.Text = $"{BuildStatusText()} | Spr:{(_panelIncludeSpread ? "On" : "Off")} Com:{(_panelIncludeCommission ? "On" : "Off")}";
+
+            SyncInputsFromState();
+
+            UpdatePanelVisibility();
+            UpdatePanelMinimizeState();
+            UpdateLineButtonVisibility();
+            UpdateLineTradeButtonPosition();
+            UpdateChartLabels();
+        }
+
+        private void SyncInputsFromState()
+        {
+            _isSynchronizingInputs = true;
 
             if (_entryInput != null)
-            {
-                _entryInput.Text = _entryMode == EntryMode.Instant
-                    ? $"LIVE {FormatPrice(_entryPrice)}"
-                    : FormatPrice(_entryPrice);
-            }
+                _entryInput.Text = FormatPrice(_entryPrice);
 
             if (_slInput != null)
                 _slInput.Text = FormatPrice(_slPrice);
@@ -560,13 +752,31 @@ namespace cAlgo.Robots
             if (_tpInput != null)
                 _tpInput.Text = FormatPrice(_tpPrice);
 
-            if (_applyPricesButton != null)
-                _applyPricesButton.IsEnabled = true;
+            if (_riskPercentInput != null)
+                _riskPercentInput.Text = _panelRiskPercent.ToString("F2", CultureInfo.InvariantCulture);
 
-            UpdatePanelVisibility();
-            UpdateLineButtonVisibility();
-            UpdateLineTradeButtonPosition();
-            UpdateChartLabels();
+            if (_moneyRiskInput != null)
+                _moneyRiskInput.Text = _panelMoneyRisk.ToString("F2", CultureInfo.InvariantCulture);
+
+            if (_commissionInput != null)
+                _commissionInput.Text = _panelCommissionPerLot.ToString("F2", CultureInfo.InvariantCulture);
+
+            if (_spreadToggleButton != null)
+            {
+                _spreadToggleButton.Text = _panelIncludeSpread ? "SPR ON" : "SPR OFF";
+                _spreadToggleButton.BackgroundColor = _panelIncludeSpread ? Color.SeaGreen : Color.Gray;
+            }
+
+            if (_commissionToggleButton != null)
+            {
+                _commissionToggleButton.Text = _panelIncludeCommission ? "COM ON" : "COM OFF";
+                _commissionToggleButton.BackgroundColor = _panelIncludeCommission ? Color.SeaGreen : Color.Gray;
+            }
+
+            if (_entryInput != null)
+                _entryInput.IsReadOnly = _entryMode == EntryMode.Instant;
+
+            _isSynchronizingInputs = false;
         }
 
         private void UpdateChartLabels()
@@ -592,7 +802,7 @@ namespace cAlgo.Robots
                 $"{direction} | Entry {FormatPrice(_entryPrice)} | Vol {volumeUnits:N0}",
                 barIndex,
                 _entryPrice,
-                Color.DodgerBlue);
+                Color.White);
 
             Chart.DrawText(
                 SlTextName,
@@ -666,7 +876,7 @@ namespace cAlgo.Robots
             if (MaxEntrySlDistancePips > 0 && plan.StopLossPips > MaxEntrySlDistancePips)
                 return strict ? "Entry-SL distance above maximum." : "Status: SL distance too large";
 
-            if (MaxRiskPercentage > 0 && MoneyRisk <= 0 && RiskPercent > MaxRiskPercentage)
+            if (MaxRiskPercentage > 0 && _panelMoneyRisk <= 0 && _panelRiskPercent > MaxRiskPercentage)
                 return strict ? "Risk % exceeds max allowed." : "Status: risk % exceeds limit";
 
             if (plan.VolumeInUnits <= 0)
@@ -801,10 +1011,10 @@ namespace cAlgo.Robots
 
         private double GetRiskAmount()
         {
-            if (MoneyRisk > 0)
-                return MoneyRisk;
+            if (_panelMoneyRisk > 0)
+                return _panelMoneyRisk;
 
-            return Account.Balance * (RiskPercent / 100.0);
+            return Account.Balance * (_panelRiskPercent / 100.0);
         }
 
         private double GetSlPips()
@@ -819,14 +1029,27 @@ namespace cAlgo.Robots
 
         private double CalculateVolumeInUnits(double riskAmount, double slPips)
         {
-            if (slPips <= 0)
+            if (slPips <= 0 || riskAmount <= 0)
                 return 0;
 
             var pipValuePerUnit = Symbol.PipValue / Symbol.LotSize;
             if (pipValuePerUnit <= 0)
                 return 0;
 
-            var rawUnits = riskAmount / (slPips * pipValuePerUnit);
+            var effectivePips = slPips;
+
+            if (_panelIncludeSpread)
+                effectivePips += Symbol.Spread / Symbol.PipSize;
+
+            var commissionPerUnit = 0.0;
+            if (_panelIncludeCommission && _panelCommissionPerLot > 0)
+                commissionPerUnit = _panelCommissionPerLot / Symbol.LotSize;
+
+            var costPerUnit = (effectivePips * pipValuePerUnit) + commissionPerUnit;
+            if (costPerUnit <= 0)
+                return 0;
+
+            var rawUnits = riskAmount / costPerUnit;
             return Symbol.NormalizeVolumeInUnits(rawUnits, RoundingMode.Down);
         }
 
