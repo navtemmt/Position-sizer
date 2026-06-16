@@ -95,6 +95,8 @@ namespace cAlgo.Robots
         private const string SlTextName = "PS_SL_TEXT";
         private const string TpTextName = "PS_TP_TEXT";
 
+        private static readonly TimeSpan InputEditLock = TimeSpan.FromMilliseconds(2000);
+
         private ChartHorizontalLine _entryLine;
         private ChartHorizontalLine _slLine;
         private ChartHorizontalLine _tpLine;
@@ -132,6 +134,13 @@ namespace cAlgo.Robots
         private TextBox _commissionInput;
 
         private bool _isSynchronizingInputs;
+
+        private DateTime _entryEditUntil;
+        private DateTime _slEditUntil;
+        private DateTime _tpEditUntil;
+        private DateTime _riskPercentEditUntil;
+        private DateTime _moneyRiskEditUntil;
+        private DateTime _commissionEditUntil;
 
         private Button _tradeButton;
         private Button _switchModeButton;
@@ -551,10 +560,22 @@ namespace cAlgo.Robots
             RefreshUi();
         }
 
+        private void MarkEditing(ref DateTime editUntil)
+        {
+            editUntil = DateTime.UtcNow.Add(InputEditLock);
+        }
+
+        private bool IsEditing(DateTime editUntil)
+        {
+            return DateTime.UtcNow < editUntil;
+        }
+
         private void OnEntryInputChanged()
         {
             if (_isSynchronizingInputs || _entryMode == EntryMode.Instant)
                 return;
+
+            MarkEditing(ref _entryEditUntil);
 
             double value;
             if (!TryParseDouble(_entryInput.Text, out value))
@@ -572,6 +593,8 @@ namespace cAlgo.Robots
             if (_isSynchronizingInputs)
                 return;
 
+            MarkEditing(ref _slEditUntil);
+
             double value;
             if (!TryParseDouble(_slInput.Text, out value))
                 return;
@@ -587,6 +610,8 @@ namespace cAlgo.Robots
         {
             if (_isSynchronizingInputs)
                 return;
+
+            MarkEditing(ref _tpEditUntil);
 
             double value;
             if (!TryParseDouble(_tpInput.Text, out value))
@@ -604,6 +629,8 @@ namespace cAlgo.Robots
             if (_isSynchronizingInputs)
                 return;
 
+            MarkEditing(ref _riskPercentEditUntil);
+
             double value;
             if (!TryParseDouble(_riskPercentInput.Text, out value))
                 return;
@@ -620,6 +647,8 @@ namespace cAlgo.Robots
             if (_isSynchronizingInputs)
                 return;
 
+            MarkEditing(ref _moneyRiskEditUntil);
+
             double value;
             if (!TryParseDouble(_moneyRiskInput.Text, out value))
                 return;
@@ -635,6 +664,8 @@ namespace cAlgo.Robots
         {
             if (_isSynchronizingInputs)
                 return;
+
+            MarkEditing(ref _commissionEditUntil);
 
             double value;
             if (!TryParseDouble(_commissionInput.Text, out value))
@@ -743,22 +774,22 @@ namespace cAlgo.Robots
         {
             _isSynchronizingInputs = true;
 
-            if (_entryInput != null)
+            if (_entryInput != null && !IsEditing(_entryEditUntil))
                 _entryInput.Text = FormatPrice(_entryPrice);
 
-            if (_slInput != null)
+            if (_slInput != null && !IsEditing(_slEditUntil))
                 _slInput.Text = FormatPrice(_slPrice);
 
-            if (_tpInput != null)
+            if (_tpInput != null && !IsEditing(_tpEditUntil))
                 _tpInput.Text = FormatPrice(_tpPrice);
 
-            if (_riskPercentInput != null)
+            if (_riskPercentInput != null && !IsEditing(_riskPercentEditUntil))
                 _riskPercentInput.Text = _panelRiskPercent.ToString("F2", CultureInfo.InvariantCulture);
 
-            if (_moneyRiskInput != null)
+            if (_moneyRiskInput != null && !IsEditing(_moneyRiskEditUntil))
                 _moneyRiskInput.Text = _panelMoneyRisk.ToString("F2", CultureInfo.InvariantCulture);
 
-            if (_commissionInput != null)
+            if (_commissionInput != null && !IsEditing(_commissionEditUntil))
                 _commissionInput.Text = _panelCommissionPerLot.ToString("F2", CultureInfo.InvariantCulture);
 
             if (_spreadToggleButton != null)
@@ -1032,7 +1063,7 @@ namespace cAlgo.Robots
             if (slPips <= 0 || riskAmount <= 0)
                 return 0;
 
-            var pipValuePerUnit = Symbol.PipValue / Symbol.LotSize;
+            var pipValuePerUnit = Symbol.PipValue;
             if (pipValuePerUnit <= 0)
                 return 0;
 
